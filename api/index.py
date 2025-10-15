@@ -1,12 +1,13 @@
 # main.py
 
 import httpx
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Form
+from fastapi.responses import StreamingResponse, HTMLResponse
 from pydantic import BaseModel, Field
 from typing import Optional
+import base64, io
 
 CREART_AI_BASE_URL = "https://api.creartai.com/api/v1"
-
 
 app = FastAPI(
     title="My Custom Image Generation API",
@@ -14,59 +15,47 @@ app = FastAPI(
     version="1.0.0"
 )
 
+# ----------------------------
+# Request Models
+# ----------------------------
 
 class Text2ImageRequest(BaseModel):
-    """Defines the expected data for a text-to-image request."""
     prompt: str = Field(..., example="a beautiful landscape, cinematic lighting, 8k")
     negative_prompt: str = ""
     aspect_ratio: str = Field(default="1x1", example="4x5")
     guidance_scale: float = Field(default=9.5, example=8.0)
     seed: Optional[int] = None
-   
-    
-    class Config:
-        
-        schema_extra = {
-            "example": {
-                "prompt": "a majestic lion in the savannah, national geographic photo",
-                "negative_prompt": "cartoon, drawing, blurry",
-                "aspect_ratio": "16x9",
-                "guidance_scale": 7.5
-            }
-        }
 
 class Image2ImageRequest(Text2ImageRequest):
-    """
-    Defines the expected data for an image-to-image request.
-    It inherits all fields from Text2ImageRequest and adds one more.
-    """
     input_image_base64: str = Field(..., description="The source image encoded in Base64 format.")
-    
-    class Config:
-        schema_extra = {
-            "example": {
-                "prompt": "make the lion wear a crown, fantasy art",
-                "input_image_base64": "/9j/4AAQSkZJRgABAQ... (very long string)",
-                "negative_prompt": "blurry, low quality",
-                "aspect_ratio": "1x1",
-                "guidance_scale": 9.0
-            }
-        }
 
+# ----------------------------
+# HTML Form for Browser
+# ----------------------------
 
-# --- API Endpoints ---
+@app.get("/", response_class=HTMLResponse)
+async def home():
+    return """
+    <html>
+        <head><title>Creart AI Image Generator</title></head>
+        <body style="font-family:sans-serif; text-align:center;">
+            <h1>🖼️ Creart AI Image Generator</h1>
+            <form action="/generate-browser" method="get">
+                <input type="text" name="prompt" placeholder="Enter your prompt" size="50" required />
+                <button type="submit">Generate</button>
+            </form>
+        </body>
+    </html>
+    """
+
+# ----------------------------
+# POST Endpoints (Original)
+# ----------------------------
 
 @app.post("/api/text-to-image")
 async def generate_text_to_image(request_data: Text2ImageRequest):
-    """
-    Endpoint to generate an image from a text prompt.
-    It takes the prompt and other parameters, then calls the external API.
-    """
-
     api_url = f"{CREART_AI_BASE_URL}/text2image"
-    
-
-    payload = {
+    payload = { 
         "prompt": request_data.prompt,
         "input_image_type": "text2image",
         "input_image_base64": "",
@@ -76,37 +65,20 @@ async def generate_text_to_image(request_data: Text2ImageRequest):
         "seed": request_data.seed,
     }
     
-    
     async with httpx.AsyncClient(timeout=60.0) as client:
         try:
-            print(f"Forwarding request to: {api_url}")
             response = await client.post(api_url, data=payload)
-            
-
             response.raise_for_status()
-            
-
             return response.json()
-            
         except httpx.HTTPStatusError as e:
-
-            raise HTTPException(
-                status_code=e.response.status_code, 
-                detail=f"Error from external API: {e.response.text}"
-            )
+            raise HTTPException(status_code=e.response.status_code, detail=f"Error from external API: {e.response.text}")
         except Exception as e:
-            
-            raise HTTPException(status_code=500, detail=f"An internal error occurred: {str(e)}")
+            raise HTTPException(status_code=500, detail=f"Internal error: {str(e)}")
 
 
 @app.post("/api/image-to-image")
 async def generate_image_to_image(request_data: Image2ImageRequest):
-    """
-    Endpoint to modify an image based on a text prompt.
-    It takes a base64 encoded image, a prompt, and other parameters.
-    """
     api_url = f"{CREART_AI_BASE_URL}/image2image"
-    
     payload = {
         "prompt": request_data.prompt,
         "input_image_type": "image2image",
@@ -117,19 +89,66 @@ async def generate_image_to_image(request_data: Image2ImageRequest):
         "seed": request_data.seed,
     }
     
-  
     async with httpx.AsyncClient(timeout=120.0) as client:
         try:
-            print(f"Forwarding request to: {api_url}")
             response = await client.post(api_url, data=payload)
             response.raise_for_status()
             return response.json()
-            
         except httpx.HTTPStatusError as e:
-            raise HTTPException(
-                status_code=e.response.status_code, 
-                detail=f"Error from external API: {e.response.text}"
-            )
+            raise HTTPException(status_code=e.response.status_code, detail=f"Error from external API: {e.response.text}")
         except Exception as e:
-            raise HTTPException(status_code=500, detail=f"An internal error occurred: {str(e)}")
+            raise HTTPException(status_code=500, detail=f"Internal error: {str(e)}")
 
+# ----------------------------
+# GET Endpoints for Browser
+# ----------------------------
+
+@app.get("/generate-browser")
+async def generate_text_to_image_browser(prompt: str = Form(...)):
+    api_url = f"{CREART_AI_BASE_URL}/text2image"
+    payload = {
+        "prompt": prompt,
+        "input_image_type": "text2image",
+        "input_image_base64": "",
+        "negative_prompt": "",
+        "aspect_ratio": "1x1",
+        "guidance_scale": 7.5,
+    }
+
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        try:
+            response = await client.post(api_url, data=payload)
+            response.raise_for_status()
+            data = response.json()
+
+            if "data" in data and "image_base64" in data["data"]:
+                image_bytes = base64.b64decode(data["data"]["image_base64"])
+                return StreamingResponse(io.BytesIO(image_bytes), media_type="image/png")
+            else:
+                return data
+
+        except httpx.HTTPStatusError as e:
+            raise HTTPException(status_code=e.response.status_code, detail=f"Error from external API: {e.response.text}")
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Internal error: {str(e)}")
+
+# Optional: direct GET with query string
+@app.get("/api/text-to-image-browser")
+async def text_to_image_direct(prompt: str):
+    """Direct GET access via URL for Chrome."""
+    api_url = f"{CREART_AI_BASE_URL}/text2image"
+    payload = {
+        "prompt": prompt,
+        "input_image_type": "text2image",
+        "input_image_base64": "",
+        "negative_prompt": "",
+        "aspect_ratio": "1x1",
+        "guidance_scale": 7.5,
+    }
+
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        response = await client.post(api_url, data=payload)
+        response.raise_for_status()
+        data = response.json()
+        image_bytes = base64.b64decode(data["data"]["image_base64"])
+        return StreamingResponse(io.BytesIO(image_bytes), media_type="image/png")
