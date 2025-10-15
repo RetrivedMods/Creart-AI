@@ -1,12 +1,15 @@
 from fastapi import FastAPI, HTTPException, Query
 from xhamster_api import Client
-import os
 
-app = FastAPI()
+app = FastAPI(title="XHamster Video Info API")
 client = Client()
 
 @app.get("/api")
-async def get_video(url: str = Query(...)):
+async def get_video_info(url: str = Query(..., description="XHamster video URL")):
+    """
+    Fetches metadata of a XHamster video and returns info + direct download link.
+    Does NOT download video to the server.
+    """
     try:
         video = client.get_video(url)
 
@@ -14,19 +17,21 @@ async def get_video(url: str = Query(...)):
         title = getattr(video, "title", "Unknown")
         views = getattr(video, "views", "Unknown")
         duration = getattr(video, "duration", "Unknown")
+        uploader = getattr(video, "uploader", "Unknown")
 
-        # Optional: Download
-        os.makedirs("downloads", exist_ok=True)
-        filename = f"{title.replace(' ', '_')}.mp4"
-        download_path = os.path.join("downloads", filename)
-        video.download(downloader="threaded", quality="best", path=download_path)
+        # Get direct video URLs (usually multiple qualities)
+        video_urls = {}
+        if hasattr(video, "videos") and isinstance(video.videos, dict):
+            for quality, v_url in video.videos.items():
+                video_urls[quality] = v_url
 
         return {
             "title": title,
+            "uploader": uploader,
             "views": views,
             "duration": duration,
-            "url": url,
-            "download_path": download_path
+            "original_url": url,
+            "video_urls": video_urls  # direct URLs, no server storage
         }
 
     except Exception as e:
