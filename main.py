@@ -1,36 +1,57 @@
 from fastapi import FastAPI, HTTPException, Query
-from xhamster_api import Client
+import requests
+from bs4 import BeautifulSoup
 
-app = FastAPI(title="XHamster Video Info API")
-client = Client()
+app = FastAPI(title="XHamster Video Info API (Scraper)")
 
 @app.get("/api")
 async def get_video_info(url: str = Query(..., description="XHamster video URL")):
     """
-    Returns metadata + direct video URL (best quality) for XHamster videos.
-    Does NOT download on server.
+    Returns metadata + direct download URL for XHamster videos
+    without saving to server.
     """
     try:
-        video = client.get_video(url)
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+        }
+        resp = requests.get(url, headers=headers)
+        if resp.status_code != 200:
+            raise HTTPException(status_code=400, detail="Failed to fetch video page")
 
-        # Safe metadata
-        title = getattr(video, "title", "Unknown")
-        views = getattr(video, "views", "Unknown")
-        duration = getattr(video, "duration", "Unknown")
-        uploader = getattr(video, "uploader", "Unknown")
+        html = resp.text
+        soup = BeautifulSoup(html, "html.parser")
 
-        # Get the best direct download URL
+        # Get the video title
+        title_tag = soup.find("meta", {"name": "title"})
+        title = title_tag["content"] if title_tag else "Unknown"
+
+        # Get the video duration
+        duration_tag = soup.find("meta", {"itemprop": "duration"})
+        duration = duration_tag["content"] if duration_tag else "Unknown"
+
+        # Get the uploader
+        uploader_tag = soup.find("a", {"class": "username"})
+        uploader = uploader_tag.text.strip() if uploader_tag else "Unknown"
+
+        # Get the direct video URL from the player configuration
         download_url = None
-        if hasattr(video, "videos") and video.videos:
-            # Usually videos is a dict with quality keys
-            # Pick the highest quality available
-            qualities = sorted(video.videos.keys(), reverse=True)
-            download_url = video.videos[qualities[0]]
+        scripts = soup.find_all("script")
+        for s in scripts:
+            if "flashvars" in s.text:
+                text = s.text
+                # Search for video URL in the JavaScript config
+                import re
+                match = re.search(r'video_url:\s*"([^"]+)"', text)
+                if match:
+                    download_url = match.group(1)
+                    break
+
+        if not download_url:
+            raise HTTPException(status_code=404, detail="Download URL not found")
 
         return {
             "title": title,
             "uploader": uploader,
-            "views": views,
             "duration": duration,
             "original_url": url,
             "download_url": download_url
