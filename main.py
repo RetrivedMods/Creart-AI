@@ -7,23 +7,25 @@ client = Client()
 @app.get("/api")
 async def get_video_info(url: str = Query(..., description="XHamster video URL")):
     """
-    Fetches metadata of a XHamster video and returns info + direct download link.
-    Does NOT download video to the server.
+    Returns metadata + direct video URL (best quality) for XHamster videos.
+    Does NOT download on server.
     """
     try:
         video = client.get_video(url)
 
-        # Safe attributes
+        # Safe metadata
         title = getattr(video, "title", "Unknown")
         views = getattr(video, "views", "Unknown")
         duration = getattr(video, "duration", "Unknown")
         uploader = getattr(video, "uploader", "Unknown")
 
-        # Get direct video URLs (usually multiple qualities)
-        video_urls = {}
-        if hasattr(video, "videos") and isinstance(video.videos, dict):
-            for quality, v_url in video.videos.items():
-                video_urls[quality] = v_url
+        # Get the best direct download URL
+        download_url = None
+        if hasattr(video, "videos") and video.videos:
+            # Usually videos is a dict with quality keys
+            # Pick the highest quality available
+            qualities = sorted(video.videos.keys(), reverse=True)
+            download_url = video.videos[qualities[0]]
 
         return {
             "title": title,
@@ -31,7 +33,7 @@ async def get_video_info(url: str = Query(..., description="XHamster video URL")
             "views": views,
             "duration": duration,
             "original_url": url,
-            "video_urls": video_urls  # direct URLs, no server storage
+            "download_url": download_url
         }
 
     except Exception as e:
