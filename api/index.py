@@ -1,7 +1,7 @@
 # main.py
 
 import httpx
-from fastapi import FastAPI, HTTPException, Form
+from fastapi import FastAPI, HTTPException, Form, UploadFile, File
 from fastapi.responses import StreamingResponse, HTMLResponse
 from pydantic import BaseModel, Field
 from typing import Optional
@@ -10,15 +10,14 @@ import base64, io
 CREART_AI_BASE_URL = "https://api.creartai.com/api/v1"
 
 app = FastAPI(
-    title="My Custom Image Generation API",
-    description="A Python wrapper for the Creart AI text-to-image and image-to-image APIs.",
+    title="Creart AI Image Generator API",
+    description="Wrapper API for Creart AI Text2Image and Image2Image endpoints.",
     version="1.0.0"
 )
 
 # ----------------------------
 # Request Models
 # ----------------------------
-
 class Text2ImageRequest(BaseModel):
     prompt: str = Field(..., example="a beautiful landscape, cinematic lighting, 8k")
     negative_prompt: str = ""
@@ -27,12 +26,11 @@ class Text2ImageRequest(BaseModel):
     seed: Optional[int] = None
 
 class Image2ImageRequest(Text2ImageRequest):
-    input_image_base64: str = Field(..., description="The source image encoded in Base64 format.")
+    input_image_base64: str = Field(..., description="Base64 encoded source image.")
 
 # ----------------------------
-# HTML Form for Browser
+# Home Page (Browser Form)
 # ----------------------------
-
 @app.get("/", response_class=HTMLResponse)
 async def home():
     return """
@@ -40,8 +38,9 @@ async def home():
         <head><title>Creart AI Image Generator</title></head>
         <body style="font-family:sans-serif; text-align:center;">
             <h1>🖼️ Creart AI Image Generator</h1>
-            <form action="/generate-browser" method="get">
-                <input type="text" name="prompt" placeholder="Enter your prompt" size="50" required />
+            <form action="/generate-browser" method="post" enctype="multipart/form-data">
+                <input type="text" name="prompt" placeholder="Enter prompt" size="50" required />
+                <input type="file" name="image_file" />
                 <button type="submit">Generate</button>
             </form>
         </body>
@@ -51,7 +50,6 @@ async def home():
 # ----------------------------
 # POST Endpoints (Original)
 # ----------------------------
-
 @app.post("/api/text-to-image")
 async def generate_text_to_image(request_data: Text2ImageRequest):
     api_url = f"{CREART_AI_BASE_URL}/text2image"
@@ -64,16 +62,15 @@ async def generate_text_to_image(request_data: Text2ImageRequest):
         "guidance_scale": request_data.guidance_scale,
         "seed": request_data.seed,
     }
-    
     async with httpx.AsyncClient(timeout=60.0) as client:
         try:
             response = await client.post(api_url, data=payload)
             response.raise_for_status()
             return response.json()
         except httpx.HTTPStatusError as e:
-            raise HTTPException(status_code=e.response.status_code, detail=f"Error from external API: {e.response.text}")
+            raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
         except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Internal error: {str(e)}")
+            raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/api/image-to-image")
@@ -88,54 +85,65 @@ async def generate_image_to_image(request_data: Image2ImageRequest):
         "guidance_scale": request_data.guidance_scale,
         "seed": request_data.seed,
     }
-    
     async with httpx.AsyncClient(timeout=120.0) as client:
         try:
             response = await client.post(api_url, data=payload)
             response.raise_for_status()
             return response.json()
         except httpx.HTTPStatusError as e:
-            raise HTTPException(status_code=e.response.status_code, detail=f"Error from external API: {e.response.text}")
+            raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
         except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Internal error: {str(e)}")
+            raise HTTPException(status_code=500, detail=str(e))
 
 # ----------------------------
-# GET Endpoints for Browser
+# Browser GET/POST Support
 # ----------------------------
+@app.post("/generate-browser")
+async def generate_browser(prompt: str = Form(...), image_file: Optional[UploadFile] = File(None)):
+    api_url = ""
+    payload = {}
 
-@app.get("/generate-browser")
-async def generate_text_to_image_browser(prompt: str = Form(...)):
-    api_url = f"{CREART_AI_BASE_URL}/text2image"
-    payload = {
-        "prompt": prompt,
-        "input_image_type": "text2image",
-        "input_image_base64": "",
-        "negative_prompt": "",
-        "aspect_ratio": "1x1",
-        "guidance_scale": 7.5,
-    }
+    if image_file:
+        # image-to-image
+        content = await image_file.read()
+        image_base64 = base64.b64encode(content).decode("utf-8")
+        api_url = f"{CREART_AI_BASE_URL}/image2image"
+        payload = {
+            "prompt": prompt,
+            "input_image_type": "image2image",
+            "input_image_base64": image_base64,
+            "negative_prompt": "",
+            "aspect_ratio": "1x1",
+            "guidance_scale": 7.5,
+        }
+    else:
+        # text-to-image
+        api_url = f"{CREART_AI_BASE_URL}/text2image"
+        payload = {
+            "prompt": prompt,
+            "input_image_type": "text2image",
+            "input_image_base64": "",
+            "negative_prompt": "",
+            "aspect_ratio": "1x1",
+            "guidance_scale": 7.5,
+        }
 
-    async with httpx.AsyncClient(timeout=60.0) as client:
+    async with httpx.AsyncClient(timeout=120.0) as client:
         try:
             response = await client.post(api_url, data=payload)
             response.raise_for_status()
             data = response.json()
-
-            if "data" in data and "image_base64" in data["data"]:
-                image_bytes = base64.b64decode(data["data"]["image_base64"])
-                return StreamingResponse(io.BytesIO(image_bytes), media_type="image/png")
-            else:
-                return data
-
-        except httpx.HTTPStatusError as e:
-            raise HTTPException(status_code=e.response.status_code, detail=f"Error from external API: {e.response.text}")
+            image_base64 = data["data"]["image_base64"]
+            image_bytes = base64.b64decode(image_base64)
+            return StreamingResponse(io.BytesIO(image_bytes), media_type="image/png")
         except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Internal error: {str(e)}")
+            raise HTTPException(status_code=500, detail=str(e))
 
-# Optional: direct GET with query string
+# ----------------------------
+# Direct GET for Chrome
+# ----------------------------
 @app.get("/api/text-to-image-browser")
-async def text_to_image_direct(prompt: str):
-    """Direct GET access via URL for Chrome."""
+async def text_to_image_browser(prompt: str):
     api_url = f"{CREART_AI_BASE_URL}/text2image"
     payload = {
         "prompt": prompt,
@@ -145,7 +153,6 @@ async def text_to_image_direct(prompt: str):
         "aspect_ratio": "1x1",
         "guidance_scale": 7.5,
     }
-
     async with httpx.AsyncClient(timeout=60.0) as client:
         response = await client.post(api_url, data=payload)
         response.raise_for_status()
